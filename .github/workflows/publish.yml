@@ -16,28 +16,28 @@ jobs:
       matrix:
         python-version: ["3.11"]
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Extract version from tag
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+      - name: Extract version from tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
 
-    - id: 'auth'
-      uses: 'google-github-actions/auth@v2'
-      with:
-        credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+      - id: "auth"
+        uses: "google-github-actions/auth@v2"
+        with:
+          credentials_json: "${{ secrets.GCP_CREDENTIALS }}"
 
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-    - name: Configure Docker for GCR
-      run: gcloud auth configure-docker europe-west1-docker.pkg.dev
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev
 
-    - name: Build and Push with Cloud Build
-      run: |
-        gcloud builds submit --substitutions=_VERSION=${VERSION} .
+      # - name: Build and Push with Cloud Build
+      #   run: |
+      #     gcloud builds submit --substitutions=_VERSION=${VERSION} .
 
-    - name: Tag image with 'latest'
-      run: |
-        gcloud builds submit --substitutions=_VERSION=latest .
-      if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') }}
+      - name: Tag image with 'latest'
+        run: |
+          gcloud builds submit --substitutions=_VERSION=latest .
+        if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') }}
