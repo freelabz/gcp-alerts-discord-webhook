@@ -2,8 +2,8 @@ name: publish
 
 on:
   push:
-    tags:
-      - v*.*.*
+    branches:
+      -   main
 
 env:
   FORCE_COLOR: 1
