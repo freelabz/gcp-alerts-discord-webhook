@@ -3,7 +3,7 @@ name: publish
 on:
   push:
     branches:
-      -   main
+      - main
 
 env:
   FORCE_COLOR: 1
