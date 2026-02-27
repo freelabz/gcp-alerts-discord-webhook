@@ -6,7 +6,7 @@ steps:
   args: ['build', '-t', '${_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/gcp-alerts-discord-webhook:${_VERSION}', '--cache-from', '${_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/gcp-alerts-discord-webhook:${_VERSION}', '.']
 
 substitutions:
-  _REPOSITORY: gcp-alerts-discord-webhook
+  _REPOSITORY: freelabz
   _LOCATION: europe-west1
   _VERSION: latest
 
