@@ -1,0 +1,69 @@
+{
+  "incident": {
+    "incident_id": "0123456789abcdef",
+    "scoping_project_id": "your-gcp-project-id",
+    "scoping_project_number": "1234567890",
+    "url": "https://console.cloud.google.com/monitoring/alerting/incidents/0123456789abcdef?project=your-gcp-project-id",
+    "started_at": "2023-10-15T12:34:56.789Z",
+    "ended_at": null,
+    "state": "open",
+    "summary": "GKE service 'my-service' in cluster 'my-cluster' is unhealthy",
+    "resource_type": "k8s_service",
+    "resource_id": "//kubernetes.io/namespace/default/service/my-service",
+    "resource": {
+      "type": "k8s_service",
+      "labels": {
+        "cluster_name": "my-cluster",
+        "location": "us-central1-a",
+        "namespace_name": "default",
+        "service_name": "my-service",
+        "project_id": "your-gcp-project-id"
+      }
+    },
+    "metadata": {
+      "user_labels": {},
+      "system_labels": {
+        "monitoring.googleapis.com/alert_policy_name": "gke-unhealthy-service-alert"
+      }
+    },
+    "policy_name": "projects/your-gcp-project-id/alertPolicies/123456789",
+    "policy_user_labels": {},
+    "condition": {
+      "condition_threshold": {
+        "filter": "resource.type=\"k8s_service\" AND resource.labels.cluster_name=\"my-cluster\" AND metric.type=\"kubernetes.io/service/healthy\"",
+        "comparison": "COMPARISON_LT",
+        "threshold_value": 1,
+        "duration": "300s"
+      },
+      "name": "projects/your-gcp-project-id/alertPolicies/123456789/conditions/123456789",
+      "display_name": "GKE Service is unhealthy"
+    },
+    "resource_display_name": "k8s_service my-service (default) in my-cluster"
+  },
+  "alert_policy": {
+    "name": "projects/your-gcp-project-id/alertPolicies/123456789",
+    "display_name": "gke-unhealthy-service-alert",
+    "conditions": [
+      {
+        "name": "projects/your-gcp-project-id/alertPolicies/123456789/conditions/123456789",
+        "display_name": "GKE Service is unhealthy",
+        "condition_threshold": {
+          "filter": "resource.type=\"k8s_service\" AND resource.labels.cluster_name=\"my-cluster\" AND metric.type=\"kubernetes.io/service/healthy\"",
+          "comparison": "COMPARISON_LT",
+          "threshold_value": 1,
+          "duration": "300s"
+        }
+      }
+    ]
+  },
+  "condition": {
+    "name": "projects/your-gcp-project-id/alertPolicies/123456789/conditions/123456789",
+    "display_name": "GKE Service is unhealthy",
+    "condition_threshold": {
+      "filter": "resource.type=\"k8s_service\" AND resource.labels.cluster_name=\"my-cluster\" AND metric.type=\"kubernetes.io/service/healthy\"",
+      "comparison": "COMPARISON_LT",
+      "threshold_value": 1,
+      "duration": "300s"
+    }
+  }
+}
