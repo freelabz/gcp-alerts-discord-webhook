@@ -42,10 +42,8 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     return credentials
 
 class AlertPayload(BaseModel):
+    version: Optional[str] = None
     incident: dict
-    alert_policy: dict
-    condition: dict
-    resource: Optional[dict] = None
 
 @app.post("/api/discord_webhook")
 async def forward_to_discord(
@@ -61,34 +59,47 @@ async def forward_to_discord(
         )
 
     try:
-        # Extract data from the alert
         incident = payload.incident
-        policy = payload.alert_policy
-        condition = payload.condition
+        resource = incident.get("resource", {})
+        resource_labels = resource.get("labels", {})
+        condition = incident.get("condition", {})
 
-        # Create Discord message embed
+        policy_name = incident.get("policy_name", "Unknown Policy")
+        condition_name = incident.get("condition_name", "Unknown")
+
+        # started_at is Unix epoch seconds in the real GCP payload
+        started_at = incident.get("started_at")
+        if isinstance(started_at, (int, float)):
+            started_str = datetime.utcfromtimestamp(started_at).strftime("%Y-%m-%d %H:%M:%S UTC")
+        elif isinstance(started_at, str):
+            started_str = datetime.fromisoformat(started_at.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S %Z")
+        else:
+            started_str = "N/A"
+
+        state = incident.get("state", "unknown")
+        color = 0xFF0000 if state == "open" else 0x00FF00
+
         embed = {
-            "title": f"🚨 GKE Alert: {policy.get('display_name', 'Unknown Policy')}",
+            "title": f"🚨 GCP Alert: {policy_name}",
             "url": incident.get("url", ""),
-            "color": 0xFF0000,  # Red
+            "color": color,
             "fields": [
-                {"name": "Cluster", "value": incident.get("labels", {}).get("cluster_name", "N/A"), "inline": True},
-                {"name": "Location", "value": incident.get("labels", {}).get("location", "N/A"), "inline": True},
-                {"name": "Condition", "value": condition.get("display_name", "Unknown"), "inline": True},
-                {"name": "Started At", "value": datetime.fromisoformat(incident["started_at"].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S %Z")},
+                {"name": "Cluster", "value": resource_labels.get("cluster_name", "N/A"), "inline": True},
+                {"name": "Location", "value": resource_labels.get("location", "N/A"), "inline": True},
+                {"name": "Condition", "value": condition_name, "inline": True},
+                {"name": "Started At", "value": started_str},
                 {"name": "Summary", "value": incident.get("summary", "No summary provided")},
-                {"name": "Severity", "value": "⚠️ OPEN" if incident.get("state") == "open" else "✅ CLOSED", "inline": True},
+                {"name": "Severity", "value": "⚠️ OPEN" if state == "open" else "✅ CLOSED", "inline": True},
             ],
-            "footer": {"text": "GKE Monitoring Alert"},
+            "footer": {"text": "GCP Monitoring Alert"},
             "timestamp": datetime.now().isoformat()
         }
 
         message = {
             "embeds": [embed],
-            "content": f"New GKE alert: {policy.get('display_name', 'Unknown Policy')}"
+            "content": f"New GCP alert: {policy_name}"
         }
 
-        # Send to Discord
         async with httpx.AsyncClient() as client:
             response = await client.post(discord_webhook_url, json=message)
             response.raise_for_status()
