@@ -6,7 +6,10 @@ import os
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
+from urllib.parse import urlparse
 import logging
+
+from google.cloud import storage
 
 app = FastAPI()
 
@@ -41,6 +44,106 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
     return credentials
 
+
+# --- GCS helpers ---
+
+def _get_gcs_bucket():
+    bucket_name = os.getenv("GCS_BUCKET_NAME")
+    if not bucket_name:
+        return None
+    client = storage.Client()
+    return client.bucket(bucket_name)
+
+
+def save_message_id(incident_id: str, message_id: str):
+    bucket = _get_gcs_bucket()
+    if not bucket:
+        logger.warning("GCS_BUCKET_NAME not set, skipping message_id persistence")
+        return
+    blob = bucket.blob(f"incidents/{incident_id}")
+    blob.upload_from_string(message_id)
+    logger.info(f"Saved message_id {message_id} for incident {incident_id}")
+
+
+def get_message_id(incident_id: str) -> Optional[str]:
+    bucket = _get_gcs_bucket()
+    if not bucket:
+        return None
+    blob = bucket.blob(f"incidents/{incident_id}")
+    if not blob.exists():
+        return None
+    return blob.download_as_text()
+
+
+def delete_message_id(incident_id: str):
+    bucket = _get_gcs_bucket()
+    if not bucket:
+        return
+    blob = bucket.blob(f"incidents/{incident_id}")
+    if blob.exists():
+        blob.delete()
+        logger.info(f"Deleted message_id blob for incident {incident_id}")
+
+
+# --- Discord helpers ---
+
+def parse_webhook_ids(webhook_url: str) -> tuple[str, str]:
+    """Extract webhook_id and webhook_token from a Discord webhook URL."""
+    path = urlparse(webhook_url).path
+    parts = path.rstrip("/").split("/")
+    # URL format: https://discord.com/api/webhooks/{id}/{token}
+    return parts[-2], parts[-1]
+
+
+def build_embed(incident: dict) -> dict:
+    resource = incident.get("resource", {})
+    resource_labels = resource.get("labels", {})
+
+    policy_name = incident.get("policy_name", "Unknown Policy")
+    condition_name = incident.get("condition_name", "Unknown")
+
+    started_at = incident.get("started_at")
+    if isinstance(started_at, (int, float)):
+        started_str = datetime.utcfromtimestamp(started_at).strftime("%Y-%m-%d %H:%M:%S UTC")
+    elif isinstance(started_at, str):
+        started_str = datetime.fromisoformat(started_at.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S %Z")
+    else:
+        started_str = "N/A"
+
+    state = incident.get("state", "unknown")
+    color = 0xFF0000 if state == "open" else 0x00FF00
+
+    fields = [
+        {"name": "Cluster", "value": resource_labels.get("cluster_name", "N/A"), "inline": True},
+        {"name": "Location", "value": resource_labels.get("location", "N/A"), "inline": True},
+        {"name": "Condition", "value": condition_name, "inline": True},
+        {"name": "Started At", "value": started_str},
+        {"name": "Summary", "value": incident.get("summary", "No summary provided")},
+        {"name": "Severity", "value": "OPEN" if state == "open" else "CLOSED", "inline": True},
+    ]
+
+    if state == "closed":
+        ended_at = incident.get("ended_at")
+        if isinstance(ended_at, (int, float)):
+            ended_str = datetime.utcfromtimestamp(ended_at).strftime("%Y-%m-%d %H:%M:%S UTC")
+        elif isinstance(ended_at, str):
+            ended_str = datetime.fromisoformat(ended_at.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S %Z")
+        else:
+            ended_str = "N/A"
+        fields.append({"name": "Ended At", "value": ended_str})
+
+    title = f"\u26a0\ufe0f GCP Alert: {policy_name}" if state == "open" else f"\u2705 GCP Alert Resolved: {policy_name}"
+
+    return {
+        "title": title,
+        "url": incident.get("url", ""),
+        "color": color,
+        "fields": fields,
+        "footer": {"text": "GCP Monitoring Alert"},
+        "timestamp": datetime.now().isoformat()
+    }
+
+
 class AlertPayload(BaseModel):
     version: Optional[str] = None
     incident: dict
@@ -60,49 +163,42 @@ async def forward_to_discord(
 
     try:
         incident = payload.incident
-        resource = incident.get("resource", {})
-        resource_labels = resource.get("labels", {})
-        condition = incident.get("condition", {})
-
-        policy_name = incident.get("policy_name", "Unknown Policy")
-        condition_name = incident.get("condition_name", "Unknown")
-
-        # started_at is Unix epoch seconds in the real GCP payload
-        started_at = incident.get("started_at")
-        if isinstance(started_at, (int, float)):
-            started_str = datetime.utcfromtimestamp(started_at).strftime("%Y-%m-%d %H:%M:%S UTC")
-        elif isinstance(started_at, str):
-            started_str = datetime.fromisoformat(started_at.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S %Z")
-        else:
-            started_str = "N/A"
-
+        incident_id = incident.get("incident_id", "")
         state = incident.get("state", "unknown")
-        color = 0xFF0000 if state == "open" else 0x00FF00
+        policy_name = incident.get("policy_name", "Unknown Policy")
 
-        embed = {
-            "title": f"🚨 GCP Alert: {policy_name}",
-            "url": incident.get("url", ""),
-            "color": color,
-            "fields": [
-                {"name": "Cluster", "value": resource_labels.get("cluster_name", "N/A"), "inline": True},
-                {"name": "Location", "value": resource_labels.get("location", "N/A"), "inline": True},
-                {"name": "Condition", "value": condition_name, "inline": True},
-                {"name": "Started At", "value": started_str},
-                {"name": "Summary", "value": incident.get("summary", "No summary provided")},
-                {"name": "Severity", "value": "⚠️ OPEN" if state == "open" else "✅ CLOSED", "inline": True},
-            ],
-            "footer": {"text": "GCP Monitoring Alert"},
-            "timestamp": datetime.now().isoformat()
-        }
-
+        embed = build_embed(incident)
         message = {
-            "embeds": [embed],
-            "content": f"New GCP alert: {policy_name}"
+            "embeds": [embed]
         }
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(discord_webhook_url, json=message)
-            response.raise_for_status()
+            if state == "closed" and incident_id:
+                # Try to edit the original message
+                existing_message_id = get_message_id(incident_id)
+                if existing_message_id:
+                    webhook_id, webhook_token = parse_webhook_ids(discord_webhook_url)
+                    patch_url = f"https://discord.com/api/webhooks/{webhook_id}/{webhook_token}/messages/{existing_message_id}"
+                    response = await client.patch(patch_url, json=message)
+                    response.raise_for_status()
+                    delete_message_id(incident_id)
+                    logger.info(f"Updated Discord message {existing_message_id} for closed incident {incident_id}")
+                else:
+                    # Fallback: no stored message_id, post new message
+                    logger.warning(f"No stored message_id for incident {incident_id}, posting new message")
+                    response = await client.post(discord_webhook_url, json=message)
+                    response.raise_for_status()
+            else:
+                # Open alert: post new message with ?wait=true to get message_id back
+                post_url = f"{discord_webhook_url}?wait=true"
+                response = await client.post(post_url, json=message)
+                response.raise_for_status()
+
+                if incident_id:
+                    discord_message = response.json()
+                    message_id = discord_message.get("id")
+                    if message_id:
+                        save_message_id(incident_id, message_id)
 
         logger.info(f"Successfully forwarded alert to Discord: {incident.get('url', '')}")
         return {"status": "success", "message": "Alert forwarded to Discord"}
