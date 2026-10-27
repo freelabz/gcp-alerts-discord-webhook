@@ -171,6 +171,12 @@ async def forward_to_discord(
         message = {
             "embeds": [embed]
         }
+        # Page: mention the on-call role on newly opened CRITICAL incidents only.
+        # WARNING/ERROR (tickets) and resolutions post without a mention.
+        oncall_role_id = os.getenv("DISCORD_ONCALL_ROLE_ID")
+        if oncall_role_id and state == "open" and str(incident.get("severity", "")).lower() == "critical":
+            message["content"] = f"<@&{oncall_role_id}>"
+            message["allowed_mentions"] = {"roles": [oncall_role_id]}
 
         async with httpx.AsyncClient() as client:
             if state == "closed" and incident_id:
