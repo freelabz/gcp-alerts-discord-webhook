@@ -3,6 +3,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
+import json
+from fnmatch import fnmatchcase
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
@@ -85,6 +87,59 @@ def delete_message_id(incident_id: str):
         logger.info(f"Deleted message_id blob for incident {incident_id}")
 
 
+# --- Routing ---
+#
+# DISCORD_ROUTES: JSON object of namespace glob -> channel name, checked in order;
+#   first match wins. e.g. {"*-staging": "staging", "kube-*": "infra"}
+# DISCORD_WEBHOOKS: JSON object of channel name -> Discord webhook URL (secret).
+# DISCORD_WEBHOOK_URL: the default channel, used when no route matches or the
+#   incident has no namespace.
+# A route to a channel with no webhook URL drops the alert (logged, 200): an
+# unconfigured channel must never fall back to the default one.
+
+DEFAULT_CHANNEL = "default"
+NAMESPACE_LABELS = (
+    ("resource", "namespace_name"),
+    ("resource", "namespace"),
+    ("metric", "namespace"),
+    ("metric", "namespace_name"),
+)
+
+
+def _json_env(name: str) -> dict:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return {}
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return value
+
+
+def incident_namespace(incident: dict) -> Optional[str]:
+    for section, key in NAMESPACE_LABELS:
+        value = ((incident.get(section) or {}).get("labels") or {}).get(key)
+        if value:
+            return value
+    return None
+
+
+def route_channel(namespace: Optional[str], routes: dict) -> str:
+    if namespace:
+        for pattern, channel in routes.items():
+            if fnmatchcase(namespace, pattern):
+                return channel
+    return DEFAULT_CHANNEL
+
+
+def resolve_webhook(incident: dict) -> tuple[str, Optional[str]]:
+    """Return (channel, webhook URL or None if that channel is not configured)."""
+    channel = route_channel(incident_namespace(incident), _json_env("DISCORD_ROUTES"))
+    if channel == DEFAULT_CHANNEL:
+        return channel, os.getenv("DISCORD_WEBHOOK_URL") or None
+    return channel, _json_env("DISCORD_WEBHOOKS").get(channel) or None
+
+
 # --- Discord helpers ---
 
 def parse_webhook_ids(webhook_url: str) -> tuple[str, str]:
@@ -115,6 +170,7 @@ def build_embed(incident: dict) -> dict:
 
     fields = [
         {"name": "Cluster", "value": resource_labels.get("cluster_name", "N/A"), "inline": True},
+        {"name": "Namespace", "value": incident_namespace(incident) or "N/A", "inline": True},
         {"name": "Location", "value": resource_labels.get("location", "N/A"), "inline": True},
         {"name": "Condition", "value": condition_name, "inline": True},
         {"name": "Started At", "value": started_str},
@@ -154,15 +210,22 @@ async def forward_to_discord(
     payload: AlertPayload,
     credentials: HTTPBasicCredentials = Depends(verify_credentials)
 ):
-    discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    incident = payload.incident
+    try:
+        channel, discord_webhook_url = resolve_webhook(incident)
+    except ValueError as e:
+        logger.error(f"Invalid routing config: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid routing config")
     if not discord_webhook_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Discord webhook URL not configured"
-        )
+        if channel == DEFAULT_CHANNEL:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Discord webhook URL not configured"
+            )
+        logger.info(f"Channel '{channel}' has no webhook configured, dropping incident {incident.get('incident_id', '')}")
+        return {"status": "dropped", "channel": channel}
 
     try:
-        incident = payload.incident
         incident_id = incident.get("incident_id", "")
         state = incident.get("state", "unknown")
         policy_name = incident.get("policy_name", "Unknown Policy")
@@ -171,10 +234,11 @@ async def forward_to_discord(
         message = {
             "embeds": [embed]
         }
-        # Page: mention the on-call role on newly opened CRITICAL incidents only.
-        # WARNING/ERROR (tickets) and resolutions post without a mention.
+        # Page: mention the on-call role on newly opened CRITICAL incidents only, and
+        # only in the default channel. WARNING/ERROR (tickets) and resolutions post
+        # without a mention.
         oncall_role_id = os.getenv("DISCORD_ONCALL_ROLE_ID")
-        if oncall_role_id and state == "open" and str(incident.get("severity", "")).lower() == "critical":
+        if oncall_role_id and channel == DEFAULT_CHANNEL and state == "open" and str(incident.get("severity", "")).lower() == "critical":
             message["content"] = f"<@&{oncall_role_id}>"
             message["allowed_mentions"] = {"roles": [oncall_role_id]}
 
@@ -206,7 +270,7 @@ async def forward_to_discord(
                     if message_id:
                         save_message_id(incident_id, message_id)
 
-        logger.info(f"Successfully forwarded alert to Discord: {incident.get('url', '')}")
+        logger.info(f"Successfully forwarded alert to Discord channel '{channel}': {incident.get('url', '')}")
         return {"status": "success", "message": "Alert forwarded to Discord"}
 
     except Exception as e:
