@@ -250,9 +250,14 @@ async def forward_to_discord(
                     webhook_id, webhook_token = parse_webhook_ids(discord_webhook_url)
                     patch_url = f"https://discord.com/api/webhooks/{webhook_id}/{webhook_token}/messages/{existing_message_id}"
                     response = await client.patch(patch_url, json=message)
+                    if getattr(response, "status_code", 200) == 404:
+                        # Message gone, or the incident opened in another channel
+                        # (routing changed): post the resolution as a new message.
+                        logger.warning(f"Discord message {existing_message_id} not found, posting new message")
+                        response = await client.post(discord_webhook_url, json=message)
                     response.raise_for_status()
                     delete_message_id(incident_id)
-                    logger.info(f"Updated Discord message {existing_message_id} for closed incident {incident_id}")
+                    logger.info(f"Resolved Discord message for closed incident {incident_id}")
                 else:
                     # Fallback: no stored message_id, post new message
                     logger.warning(f"No stored message_id for incident {incident_id}, posting new message")

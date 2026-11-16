@@ -107,3 +107,46 @@ def test_namespace_field_in_embed(sent):
     _post({"namespace_name": "app-staging"})
     fields = {f["name"]: f["value"] for f in sent[0][1]["embeds"][0]["fields"]}
     assert fields["Namespace"] == "app-staging"
+
+
+def test_closed_patch_404_posts_new_message(monkeypatch):
+    calls = []
+
+    class _R:
+        def __init__(self, code):
+            self.status_code = code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+        def json(self):
+            return {"id": "9"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def post(self, url, json):
+            calls.append(("post", url))
+            return _R(200)
+
+        async def patch(self, url, json):
+            calls.append(("patch", url))
+            return _R(404)
+
+    deleted = []
+    monkeypatch.setattr(main.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(main, "get_message_id", lambda *a: "123")
+    monkeypatch.setattr(main, "delete_message_id", lambda i: deleted.append(i))
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", DEFAULT)
+    monkeypatch.delenv("DISCORD_ROUTES", raising=False)
+    payload = json.load(open(os.path.join(os.path.dirname(__file__), "test_payload.json")))
+    payload["incident"]["state"] = "closed"
+    r = TestClient(main.app).post("/api/discord_webhook", json=payload, auth=("secator", "secator"))
+    assert r.status_code == 200
+    assert [c[0] for c in calls] == ["patch", "post"]
+    assert deleted == [payload["incident"]["incident_id"]]
